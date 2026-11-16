@@ -336,6 +336,7 @@ body.blurred .drawer dd,
 body.blurred .ledger-chg,
 body.blurred .ledger-day,
 body.blurred .l-ylab,
+body.blurred .acct-stats dd,
 body.blurred .tip {
   filter: blur(14px);
   user-select: none;
@@ -376,3 +377,14 @@ body.blurred .k-total .fig-xl {
 .l-hit { cursor: crosshair; }
 .l-ylab, .l-xlab { fill: var(--muted); font: 400 12px var(--body); font-variant-numeric: tabular-nums; }
 .ledger-note { margin: 10px 0 0; font-size: 14px; }
+
+/* Account details stepper card */
+.acct-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 17px; }
+.acct-nav { display: flex; align-items: center; gap: 10px; }
+.btn-sm { padding: 7px 12px; font-size: 11px; }
+.acct-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px 20px;
+  margin: 14px 0 18px; padding: 14px 16px; background: rgba(15, 13, 12, .35); border: 1px solid var(--brass-dim);
+}
+.acct-stats dt { margin-bottom: 4px; }
+.acct-stats dd { margin: 0; font: 400 22px/1.1 var(--display); }

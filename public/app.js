@@ -39,6 +39,7 @@ let holdingsSort = { key: 'value', dir: -1 };
 let lotTerm = 'all';
 let ledgerRange = '1M';
 let ledgerFilter = 'all';
+let acctIndex = 0;
 
 // --- tooltip -------------------------------------------------------------
 const tip = $('#tip');
@@ -102,6 +103,60 @@ async function removeItem(item) {
     await api(`/api/items/${encodeURIComponent(item.itemId)}`, { method: 'DELETE' });
     load();
   } catch (err) { alert(err.message); }
+}
+
+function renderAccountExplorer() {
+  const secEl = $('#acct-sec');
+  const accts = data?.accounts ?? [];
+  if (!accts.length) { secEl.hidden = true; return; }
+  secEl.hidden = false;
+  acctIndex = ((acctIndex % accts.length) + accts.length) % accts.length;
+  const a = accts[acctIndex];
+  const totalVal = data?.totals?.value || 0;
+  const share = totalVal ? a.value / totalVal : 0;
+  const gainPct = a.costBasis ? a.gain / a.costBasis : null;
+
+  $('#acct-idx').textContent = `${acctIndex + 1} / ${accts.length}`;
+  $('#acct-prev').disabled = accts.length <= 1;
+  $('#acct-next').disabled = accts.length <= 1;
+
+  $('#acct-meta').replaceChildren(
+    h('span', { class: 'swatch', style: { background: instColor.get(a.institution) } }),
+    h('strong', {}, a.institution),
+    a.name && a.name !== a.institution ? h('span', { class: 'muted' }, `· ${a.name}`) : null,
+    a.mask ? h('span', { class: 'muted' }, `••${a.mask}`) : null,
+    a.subtype ? h('span', { class: 'pill' }, a.subtype) : null,
+    a.taxShelter ? h('span', { class: 'pill shelter' }, a.taxShelter) : null,
+  );
+
+  $('#acct-stats').replaceChildren(...[
+    ['Total value', money(a.value), ''],
+    ['Portfolio share', pct(share), ''],
+    ['Invested', money(a.invested), ''],
+    ['Cash', money(a.cash), ''],
+    ['Cost basis', money(a.costBasis), ''],
+    ['Unrealized gain', `${arrow(a.gain)}${signed(a.gain)}${gainPct != null ? ` (${pct(gainPct, true)})` : ''}`, tone(a.gain)],
+  ].map(([k, v, cls]) => h('div', {}, h('dt', { class: 'label' }, k), h('dd', { class: cls }, v))));
+
+  table('#acct-positions', [
+    { label: 'Holding', left: true, cell: (p) => h('div', {}, h('div', { class: 'sym' }, p.ticker ?? p.name), h('div', { class: 'nm', title: p.name }, p.name)) },
+    { label: 'Type', left: true, cell: (p) => TYPE_LABEL[p.type] ?? p.type },
+    { label: 'Qty', cell: (p) => qty(p.quantity) },
+    { label: 'Price', cell: (p) => money(p.price) },
+    { label: 'Value', cell: (p) => money(p.value) },
+    { label: 'Cost basis', cell: (p) => money(p.costBasis) },
+    { label: 'Gain / loss', cell: (p) => gainCell(p.gain) },
+    { label: 'Return', cell: (p) => (p.gainPct != null ? h('span', { class: tone(p.gainPct) }, `${arrow(p.gainPct)}${pct(p.gainPct, true)}`) : '–') },
+  ], a.positions ?? [], {
+    empty: 'No investment positions in this account (cash only).',
+    onRow: {
+      label: (p) => p.ticker ?? p.name,
+      open: (p, el) => {
+        const match = data.holdings.find((x) => (x.ticker || x.key || x.name) === p.key);
+        if (match) showDrawer(holdingDrawer(match), el);
+      },
+    },
+  });
 }
 
 // --- daily ledger stock graph ---------------------------------------------
@@ -341,6 +396,7 @@ function render() {
   $('#alerts').replaceChildren(...alerts);
 
   renderAccounts();
+  renderAccountExplorer();
   renderLedger();
   renderOverall();
 
@@ -872,6 +928,8 @@ $('#ledger-filter').addEventListener('change', (e) => {
   ledgerFilter = e.target.value;
   renderLedger();
 });
+$('#acct-prev').addEventListener('click', () => { acctIndex -= 1; renderAccountExplorer(); });
+$('#acct-next').addEventListener('click', () => { acctIndex += 1; renderAccountExplorer(); });
 const blurBtn = $('#blur');
 const setBlur = (on) => {
   document.body.classList.toggle('blurred', on);

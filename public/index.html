@@ -111,6 +111,23 @@
         <p id="ledger-note" class="muted ledger-note" hidden></p>
       </section>
 
+      <section class="panel acct-explorer rise" style="--i:4" id="acct-sec" aria-labelledby="acct-h" hidden>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+        <div class="card-head">
+          <div>
+            <h2 id="acct-h">Account details</h2>
+            <div id="acct-meta" class="acct-meta"></div>
+          </div>
+          <div class="acct-nav">
+            <button id="acct-prev" class="btn ghost btn-sm" type="button" aria-label="Previous account">‹ Prev</button>
+            <span id="acct-idx" class="muted tnum"></span>
+            <button id="acct-next" class="btn ghost btn-sm" type="button" aria-label="Next account">Next ›</button>
+          </div>
+        </div>
+        <dl id="acct-stats" class="acct-stats tnum"></dl>
+        <div class="table-wrap"><table id="acct-positions"></table></div>
+      </section>
+
       <section class="panel alloc-panel rise" style="--i:4">
         <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
         <span class="banker" aria-hidden="true"></span>
