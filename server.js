@@ -173,7 +173,7 @@ app.get('/api/portfolio', async (req, res) => {
       removable: i.source !== 'kraken',
     }));
     result.insights = insights(result);
-    result.history = DEMO ? demoHistory(asOf, result.totals) : recordSnapshot(asOf, result.totals);
+    result.history = DEMO ? demoHistory(asOf, result) : recordSnapshot(asOf, result);
     res.json(result);
   } catch (err) { fail(res, err); }
 });

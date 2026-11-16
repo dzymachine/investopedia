@@ -322,9 +322,7 @@ body.open .back { opacity: 1; pointer-events: auto; }
 
 /* Privacy blur toggle */
 .btn.ghost[aria-pressed="true"] { border-color: var(--brass); color: var(--brass-text); background: rgba(181, 138, 90, .14); }
-body.blurred .card .fig,
 body.blurred .card .sub,
-body.blurred .k-side dd,
 body.blurred .ov-pct,
 body.blurred .acct .val,
 body.blurred .legend li > span:nth-child(3),
@@ -333,20 +331,38 @@ body.blurred tbody td:not(.l):not(.none),
 body.blurred .tax-card dd,
 body.blurred .note-head p,
 body.blurred .note dd,
-body.blurred .drawer h2,
 body.blurred .drawer .d-sub,
 body.blurred .drawer dd,
-body.blurred .ledger-val,
 body.blurred .ledger-chg,
 body.blurred .ledger-day,
 body.blurred .l-ylab,
 body.blurred .tip {
-  filter: blur(8px);
+  filter: blur(14px);
+  user-select: none;
+  transition: filter .2s ease;
+}
+body.blurred .card .fig,
+body.blurred .k-side dd,
+body.blurred .ledger-val,
+body.blurred .drawer h2 {
+  filter: blur(26px);
+  user-select: none;
+  transition: filter .2s ease;
+}
+body.blurred .k-total .fig-xl {
+  filter: blur(42px);
   user-select: none;
   transition: filter .2s ease;
 }
 
 /* Daily ledger stock-style graph */
+.ledger-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ledger-select {
+  font: 500 11px var(--label); letter-spacing: .08em; text-transform: uppercase;
+  padding: 8px 12px; border-radius: 2px; border: 1px solid var(--brass-dim);
+  background: rgba(0, 0, 0, .45); color: var(--text); max-width: 260px; cursor: pointer;
+}
+.ledger-select:focus-visible { outline: 2px solid var(--brass-text); outline-offset: 2px; }
 .ledger-readout { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
 .ledger-val { font: 400 38px/1 var(--display); color: var(--text); }
 .ledger-chg { font-size: 16px; font-weight: 500; }

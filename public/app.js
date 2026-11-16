@@ -38,6 +38,7 @@ let instColor = new Map();
 let holdingsSort = { key: 'value', dir: -1 };
 let lotTerm = 'all';
 let ledgerRange = '1M';
+let ledgerFilter = 'all';
 
 // --- tooltip -------------------------------------------------------------
 const tip = $('#tip');
@@ -124,14 +125,71 @@ function sliceHistory(history, range) {
   return sliced.length ? sliced : history;
 }
 
+function populateLedgerFilter() {
+  const sel = $('#ledger-filter');
+  const groups = [h('option', { value: 'all' }, 'All accounts (Total)')];
+
+  const insts = data?.byInstitution ?? [];
+  if (insts.length) {
+    groups.push(h('optgroup', { label: 'Institutions' },
+      insts.map((i) => h('option', { value: `inst:${i.name}` }, i.name))));
+  }
+
+  const accts = data?.accounts ?? [];
+  if (accts.length) {
+    groups.push(h('optgroup', { label: 'Accounts' },
+      accts.map((a) => {
+        const key = `${a.institution}::${a.accountId ?? a.name}`;
+        const label = a.name && a.name !== a.institution ? `${a.institution} · ${a.name}` : a.institution;
+        return h('option', { value: `acct:${key}` }, label);
+      })));
+  }
+
+  const holds = [...(data?.holdings ?? [])].sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+  if (holds.length) {
+    groups.push(h('optgroup', { label: 'Stocks & Assets' },
+      holds.map((x) => {
+        const k = x.ticker || x.key || x.name;
+        const label = x.ticker && x.name && x.ticker !== x.name ? `${x.ticker} · ${x.name}` : (x.ticker ?? x.name);
+        return h('option', { value: `hold:${k}` }, label);
+      })));
+  }
+
+  sel.replaceChildren(...groups);
+  const has = [...sel.options].some((o) => o.value === ledgerFilter);
+  if (!has) ledgerFilter = 'all';
+  sel.value = ledgerFilter;
+}
+
+function extractLedgerSeries(history, filter) {
+  if (filter === 'all') return history.map((s) => ({ date: s.date, value: s.value, price: null }));
+  const [kind, ...rest] = filter.split(':');
+  const key = rest.join(':');
+  const out = [];
+  for (const s of history) {
+    if (kind === 'inst' && s.institutions && s.institutions[key] != null) {
+      out.push({ date: s.date, value: s.institutions[key], price: null });
+    } else if (kind === 'acct' && s.accounts && s.accounts[key] != null) {
+      out.push({ date: s.date, value: s.accounts[key].value, price: null });
+    } else if (kind === 'hold' && s.holdings && s.holdings[key] != null) {
+      out.push({ date: s.date, value: s.holdings[key].value, price: s.holdings[key].price });
+    }
+  }
+  return out;
+}
+
 function renderLedger() {
-  const all = data?.history ?? [];
+  populateLedgerFilter();
+  const raw = data?.history ?? [];
+  const all = extractLedgerSeries(raw, ledgerFilter);
   const wrap = $('#ledger-chart');
   const note = $('#ledger-note');
   if (!all.length) {
     wrap.replaceChildren();
     note.hidden = false;
-    note.textContent = 'Link an account to start recording your daily ledger.';
+    note.textContent = raw.length
+      ? 'No daily history recorded for this selection yet — check back after today’s snapshot.'
+      : 'Link an account to start recording your daily ledger.';
     $('#ledger-val').textContent = '–';
     $('#ledger-chg').textContent = '';
     $('#ledger-day').textContent = '';
@@ -159,9 +217,10 @@ function renderLedger() {
     chgEl.textContent = pts.length > 1
       ? `${arrow(diff)}${signed(diff)}${diffPct != null ? ` (${pct(diffPct, true)})` : ''}`
       : '';
-    $('#ledger-day').textContent = dayDiff != null
-      ? `Day: ${signed(dayDiff)}${dayPct != null ? ` (${pct(dayPct, true)})` : ''}`
-      : '';
+    const parts = [];
+    if (pt.price != null) parts.push(`Price: ${money(pt.price)}`);
+    if (dayDiff != null) parts.push(`Day: ${signed(dayDiff)}${dayPct != null ? ` (${pct(dayPct, true)})` : ''}`);
+    $('#ledger-day').textContent = parts.join(' · ');
     $('#ledger-date').textContent = date(pt.date);
   };
   setReadout(pts.length - 1);
@@ -809,6 +868,10 @@ document.querySelectorAll('.ledger-range button').forEach((b) => b.addEventListe
   document.querySelectorAll('.ledger-range button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   renderLedger();
 }));
+$('#ledger-filter').addEventListener('change', (e) => {
+  ledgerFilter = e.target.value;
+  renderLedger();
+});
 const blurBtn = $('#blur');
 const setBlur = (on) => {
   document.body.classList.toggle('blurred', on);
