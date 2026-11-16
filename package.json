@@ -1,0 +1,20 @@
+{
+  "name": "investment-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "demo": "DEMO=1 node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.3",
+    "express": "^4.22.3",
+    "plaid": "^50.0.0"
+  }
+}

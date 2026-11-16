@@ -1,0 +1,28 @@
+app = "APP_NAME"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "8080"
+  PUBLIC_ORIGIN = "https://APP_NAME.fly.dev"
+  DATA_DIR = "/data"
+  PLAID_ENV = "sandbox"
+  # Dates (tax year, "as of") use this timezone. Change to yours.
+  TZ = "America/Los_Angeles"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Sleep when idle, wake on the next visit. Only the volume costs money while stopped.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[mounts]]
+  source = "ledger_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
