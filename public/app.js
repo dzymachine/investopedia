@@ -37,6 +37,7 @@ let data = null;
 let instColor = new Map();
 let holdingsSort = { key: 'value', dir: -1 };
 let lotTerm = 'all';
+let ledgerRange = '1M';
 
 // --- tooltip -------------------------------------------------------------
 const tip = $('#tip');
@@ -102,6 +103,172 @@ async function removeItem(item) {
   } catch (err) { alert(err.message); }
 }
 
+// --- daily ledger stock graph ---------------------------------------------
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs = {}, kids = []) => {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, String(v));
+  for (const k of kids) if (k) el.append(k);
+  return el;
+};
+
+function sliceHistory(history, range) {
+  if (!history.length || range === 'ALL') return history;
+  const end = history[history.length - 1].date;
+  const endMs = Date.parse(end);
+  const days = { '1W': 7, '1M': 30, '3M': 90, '1Y': 365 }[range];
+  const cutoff = days
+    ? new Date(endMs - (days - 1) * 86_400_000).toISOString().slice(0, 10)
+    : `${end.slice(0, 4)}-01-01`;
+  const sliced = history.filter((p) => p.date >= cutoff);
+  return sliced.length ? sliced : history;
+}
+
+function renderLedger() {
+  const all = data?.history ?? [];
+  const wrap = $('#ledger-chart');
+  const note = $('#ledger-note');
+  if (!all.length) {
+    wrap.replaceChildren();
+    note.hidden = false;
+    note.textContent = 'Link an account to start recording your daily ledger.';
+    $('#ledger-val').textContent = '–';
+    $('#ledger-chg').textContent = '';
+    $('#ledger-day').textContent = '';
+    $('#ledger-date').textContent = '';
+    return;
+  }
+
+  const pts = sliceHistory(all, ledgerRange);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const up = last.value >= first.value;
+  const stroke = up ? 'var(--gain)' : 'var(--loss)';
+
+  const setReadout = (idx) => {
+    const pt = pts[idx];
+    const diff = pt.value - first.value;
+    const diffPct = first.value ? diff / first.value : null;
+    const prev = idx > 0 ? pts[idx - 1] : null;
+    const dayDiff = prev ? pt.value - prev.value : null;
+    const dayPct = prev?.value ? dayDiff / prev.value : null;
+
+    $('#ledger-val').textContent = money(pt.value);
+    const chgEl = $('#ledger-chg');
+    chgEl.className = `ledger-chg ${tone(diff)}`;
+    chgEl.textContent = pts.length > 1
+      ? `${arrow(diff)}${signed(diff)}${diffPct != null ? ` (${pct(diffPct, true)})` : ''}`
+      : '';
+    $('#ledger-day').textContent = dayDiff != null
+      ? `Day: ${signed(dayDiff)}${dayPct != null ? ` (${pct(dayPct, true)})` : ''}`
+      : '';
+    $('#ledger-date').textContent = date(pt.date);
+  };
+  setReadout(pts.length - 1);
+
+  note.hidden = all.length > 1;
+  if (all.length === 1) {
+    note.textContent = "Today's snapshot is recorded. Check back on future days to see your daily trend.";
+  }
+
+  const W = 860, H = 240;
+  const pad = { l: 10, r: 78, t: 18, b: 28 };
+  const pw = W - pad.l - pad.r;
+  const ph = H - pad.t - pad.b;
+
+  const vals = pts.map((p) => p.value);
+  let minV = Math.min(...vals);
+  let maxV = Math.max(...vals);
+  const span = maxV - minV;
+  const padV = span > 0 ? span * 0.14 : Math.max(Math.abs(maxV) * 0.02, 100);
+  minV = Math.max(0, minV - padV);
+  maxV = maxV + padV;
+  const rangeV = maxV - minV || 1;
+
+  const xAt = (i) => (pts.length === 1 ? pad.l + pw / 2 : pad.l + (i / (pts.length - 1)) * pw);
+  const yAt = (v) => pad.t + (1 - (v - minV) / rangeV) * ph;
+
+  const gradId = 'ledger-grad';
+  const defs = svgEl('defs', {}, [
+    svgEl('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '0', y2: '1' }, [
+      svgEl('stop', { offset: '0%', 'stop-color': stroke, 'stop-opacity': '0.28' }),
+      svgEl('stop', { offset: '100%', 'stop-color': stroke, 'stop-opacity': '0' }),
+    ]),
+  ]);
+
+  const grid = [];
+  for (let i = 0; i <= 3; i++) {
+    const v = minV + (rangeV * i) / 3;
+    const y = yAt(v);
+    grid.push(
+      svgEl('line', { x1: pad.l, y1: y, x2: W - pad.r, y2: y, class: 'l-grid' }),
+      svgEl('text', { x: W - pad.r + 8, y: y + 4, class: 'l-ylab' }, [usd0.format(v)]),
+    );
+  }
+
+  // Baseline at period start
+  const baseY = yAt(first.value);
+  grid.push(svgEl('line', { x1: pad.l, y1: baseY, x2: W - pad.r, y2: baseY, class: 'l-base' }));
+
+  // X-axis date ticks (up to 5)
+  const tickCount = Math.min(5, pts.length);
+  const xLabels = [];
+  const shortDate = (s) => new Date(`${s}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const usedIdx = new Set();
+  for (let t = 0; t < tickCount; t++) {
+    const idx = tickCount === 1 ? 0 : Math.round((t / (tickCount - 1)) * (pts.length - 1));
+    if (usedIdx.has(idx)) continue;
+    usedIdx.add(idx);
+    const anchor = idx === 0 && pts.length > 1 ? 'start' : idx === pts.length - 1 && pts.length > 1 ? 'end' : 'middle';
+    xLabels.push(svgEl('text', { x: xAt(idx), y: H - 6, 'text-anchor': anchor, class: 'l-xlab' }, [shortDate(pts[idx].date)]));
+  }
+
+  const linePts = pts.map((p, i) => `${xAt(i).toFixed(1)},${yAt(p.value).toFixed(1)}`);
+  const areaD = pts.length > 1
+    ? `M ${xAt(0).toFixed(1)},${(pad.t + ph).toFixed(1)} L ${linePts.join(' L ')} L ${xAt(pts.length - 1).toFixed(1)},${(pad.t + ph).toFixed(1)} Z`
+    : '';
+  const lineD = pts.length > 1 ? `M ${linePts.join(' L ')}` : '';
+
+  const cross = svgEl('line', { x1: 0, y1: pad.t, x2: 0, y2: pad.t + ph, class: 'l-cross', visibility: 'hidden' });
+  const dot = svgEl('circle', { cx: xAt(pts.length - 1), cy: yAt(last.value), r: 4.5, fill: stroke, class: 'l-dot' });
+  const hit = svgEl('rect', { x: pad.l, y: pad.t, width: pw, height: ph, fill: 'transparent', class: 'l-hit' });
+
+  const move = (clientX, svg) => {
+    const rect = svg.getBoundingClientRect();
+    const relX = ((clientX - rect.left) / (rect.width || 1)) * W;
+    const norm = Math.max(0, Math.min(1, (relX - pad.l) / (pw || 1)));
+    const idx = pts.length === 1 ? 0 : Math.round(norm * (pts.length - 1));
+    const cx = xAt(idx);
+    const cy = yAt(pts[idx].value);
+    cross.setAttribute('x1', cx);
+    cross.setAttribute('x2', cx);
+    cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', cx);
+    dot.setAttribute('cy', cy);
+    setReadout(idx);
+  };
+  const leave = () => {
+    cross.setAttribute('visibility', 'hidden');
+    dot.setAttribute('cx', xAt(pts.length - 1));
+    dot.setAttribute('cy', yAt(last.value));
+    setReadout(pts.length - 1);
+  };
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Daily portfolio value chart' }, [
+    defs,
+    ...grid,
+    ...xLabels,
+    areaD ? svgEl('path', { d: areaD, fill: `url(#${gradId})` }) : null,
+    lineD ? svgEl('path', { d: lineD, fill: 'none', stroke, 'stroke-width': '2.25', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }) : null,
+    cross,
+    dot,
+    hit,
+  ]);
+  hit.addEventListener('pointermove', (e) => move(e.clientX, svg));
+  hit.addEventListener('pointerleave', leave);
+  wrap.replaceChildren(svg);
+}
+
 // --- render ---------------------------------------------------------------
 function render() {
   const { totals, tax, items } = data;
@@ -115,6 +282,7 @@ function render() {
   $('#alerts').replaceChildren(...alerts);
 
   renderAccounts();
+  renderLedger();
   renderOverall();
 
   $('#k-value').textContent = usd0.format(totals.value);
@@ -631,10 +799,15 @@ $('#settings').addEventListener('click', async (e) => {
 });
 
 // --- wiring ---------------------------------------------------------------
-document.querySelectorAll('.seg button').forEach((b) => b.addEventListener('click', () => {
+document.querySelectorAll('#lots-sec .seg button').forEach((b) => b.addEventListener('click', () => {
   lotTerm = b.dataset.term;
-  document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  document.querySelectorAll('#lots-sec .seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   renderLots();
+}));
+document.querySelectorAll('.ledger-range button').forEach((b) => b.addEventListener('click', () => {
+  ledgerRange = b.dataset.range;
+  document.querySelectorAll('.ledger-range button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  renderLedger();
 }));
 const blurBtn = $('#blur');
 const setBlur = (on) => {

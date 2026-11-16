@@ -8,6 +8,7 @@ import { demoItems } from './lib/demo.js';
 import { createAuth } from './lib/auth.js';
 import { createKraken } from './lib/kraken.js';
 import { createUsage, instrument } from './lib/usage.js';
+import { recordSnapshot, demoHistory } from './lib/history.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const DEMO = process.env.DEMO === '1';
@@ -172,6 +173,7 @@ app.get('/api/portfolio', async (req, res) => {
       removable: i.source !== 'kraken',
     }));
     result.insights = insights(result);
+    result.history = DEMO ? demoHistory(asOf, result.totals) : recordSnapshot(asOf, result.totals);
     res.json(result);
   } catch (err) { fail(res, err); }
 });

@@ -336,8 +336,27 @@ body.blurred .note dd,
 body.blurred .drawer h2,
 body.blurred .drawer .d-sub,
 body.blurred .drawer dd,
+body.blurred .ledger-val,
+body.blurred .ledger-chg,
+body.blurred .ledger-day,
+body.blurred .l-ylab,
 body.blurred .tip {
   filter: blur(8px);
   user-select: none;
   transition: filter .2s ease;
 }
+
+/* Daily ledger stock-style graph */
+.ledger-readout { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+.ledger-val { font: 400 38px/1 var(--display); color: var(--text); }
+.ledger-chg { font-size: 16px; font-weight: 500; }
+.ledger-day, .ledger-date { font-size: 15px; }
+.ledger-chart { margin-top: 12px; width: 100%; }
+.ledger-chart svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.l-grid { stroke: rgba(181, 138, 90, .14); stroke-dasharray: 2 4; }
+.l-base { stroke: rgba(181, 138, 90, .35); stroke-dasharray: 4 4; }
+.l-cross { stroke: var(--brass-text); stroke-width: 1; stroke-dasharray: 3 3; opacity: .75; }
+.l-dot { stroke: var(--panel); stroke-width: 2; }
+.l-hit { cursor: crosshair; }
+.l-ylab, .l-xlab { fill: var(--muted); font: 400 12px var(--body); font-variant-numeric: tabular-nums; }
+.ledger-note { margin: 10px 0 0; font-size: 14px; }
