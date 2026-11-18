@@ -8,7 +8,8 @@ import { demoItems } from './lib/demo.js';
 import { createAuth } from './lib/auth.js';
 import { createKraken } from './lib/kraken.js';
 import { createUsage, instrument } from './lib/usage.js';
-import { recordSnapshot, demoHistory } from './lib/history.js';
+import { recordSnapshot, backfillHistory, demoHistory } from './lib/history.js';
+import { loadMarginEntries, addMarginEntry, deleteMarginEntry, summarizeMargin, demoMargin } from './lib/margin.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const DEMO = process.env.DEMO === '1';
@@ -157,13 +158,15 @@ app.get('/api/institutions', async (req, res) => {
 });
 
 app.get('/api/portfolio', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
   const asOf = today();
+  const fresh = req.query.fresh === '1';
   try {
     const items = DEMO
       ? demoItems(asOf)
       : await Promise.all([
-        ...loadItems().map((item) => fetchItem(plaid, item, asOf)),
-        ...(kraken ? [kraken.fetchItem({ fresh: req.query.fresh === '1' })] : []),
+        ...loadItems().map((item) => fetchItem(plaid, item, asOf, { fresh })),
+        ...(kraken ? [kraken.fetchItem({ fresh })] : []),
       ]);
     if (!DEMO) usage.connections(loadItems().map((i) => ({ itemId: i.item_id, institution: i.institution })));
     const result = analyze(items, { asOf, stRate, ltRate });
@@ -172,10 +175,31 @@ app.get('/api/portfolio', async (req, res) => {
       needsReauth: i.errorCode === 'ITEM_LOGIN_REQUIRED',
       removable: i.source !== 'kraken',
     }));
+    result.margin = summarizeMargin(DEMO ? demoMargin(asOf) : loadMarginEntries(), result, items);
+    if (DEMO) {
+      result.history = demoHistory(asOf, result);
+    } else {
+      await backfillHistory(asOf, items, result);
+      result.history = recordSnapshot(asOf, result);
+    }
     result.insights = insights(result);
-    result.history = DEMO ? demoHistory(asOf, result) : recordSnapshot(asOf, result);
     res.json(result);
   } catch (err) { fail(res, err); }
+});
+
+app.post('/api/margin', (req, res) => {
+  if (DEMO) return fail(res, { code: 'DEMO', message: 'Margin logging is disabled in demo mode.' }, 400);
+  try {
+    const entry = addMarginEntry(req.body);
+    res.json({ ok: true, entry });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+app.delete('/api/margin/:id', (req, res) => {
+  if (DEMO) return fail(res, { code: 'DEMO', message: 'Disabled in demo mode.' }, 400);
+  const ok = deleteMarginEntry(req.params.id);
+  if (!ok) return fail(res, { code: 'NOT_FOUND', message: 'Unknown margin entry.' }, 404);
+  res.json({ ok: true });
 });
 
 // What running the app costs (estimates from tracked usage and your rates).

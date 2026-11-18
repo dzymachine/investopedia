@@ -1,13 +1,13 @@
-app = "APP_NAME"
+app = "ledger-7f3k"
 primary_region = "iad"
 
 [build]
 
 [env]
   PORT = "8080"
-  PUBLIC_ORIGIN = "https://APP_NAME.fly.dev"
+  PUBLIC_ORIGIN = "https://ledger-7f3k.fly.dev"
   DATA_DIR = "/data"
-  PLAID_ENV = "sandbox"
+  PLAID_ENV = "production"
   # Dates (tax year, "as of") use this timezone. Change to yours.
   TZ = "America/Los_Angeles"
 

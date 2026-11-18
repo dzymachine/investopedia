@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Taxes · Portfolio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=IM+Fell+English:ital@0;1&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="lights" aria-hidden="true">
+    <div class="lamp amber l1"></div><div class="lamp amber l2"></div><div class="lamp amber l3"></div>
+  </div>
+
+  <div id="app">
+    <header class="top">
+      <div class="brand">
+        <h1>Portfolio</h1>
+        <span id="env" class="badge"></span>
+        <nav class="top-nav" aria-label="Pages">
+          <a href="/" class="nav-link">Dashboard</a>
+          <a href="/taxes.html" class="nav-link" aria-current="page">Taxes</a>
+        </nav>
+      </div>
+      <div class="actions">
+        <span id="asof" class="muted"></span>
+        <button id="blur" class="btn ghost" type="button" aria-pressed="false" title="Blur financial figures">Blur</button>
+        <button id="refresh" class="btn ghost" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main>
+      <div id="alerts"></div>
+
+      <section class="panel rise" style="--i:0" id="taxes">
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+        <h2>Taxes</h2>
+        <p class="muted lede">You're only taxed when you sell. Gains on shares held more than a year are long-term and taxed at a lower rate.
+          Sales this year are reported on the return due <strong id="t-deadline"></strong>.</p>
+        <div class="tax-grid" id="tax-grid"></div>
+        <h3 class="label sub-h">Turning long-term soon</h3>
+        <p class="muted">These lots have a gain. Waiting until the date shown before selling moves them to the lower long-term rate.</p>
+        <div class="table-wrap"><table id="upcoming"></table></div>
+      </section>
+
+      <section class="panel rise" style="--i:1" id="lots-sec">
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+        <div class="card-head">
+          <h2>Tax lots</h2>
+          <div class="seg" role="group" aria-label="Filter lots">
+            <button type="button" data-term="all" aria-pressed="true">All</button>
+            <button type="button" data-term="short" aria-pressed="false">Short-term</button>
+            <button type="button" data-term="long" aria-pressed="false">Long-term</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="lots"></table></div>
+      </section>
+
+      <p class="disclaimer muted">Estimates only, not tax advice. Uses your rates from <code>.env</code> and first-in, first-out matching.
+        Wash sales, stock splits, transfers between brokers, and the $3,000 loss deduction aren't modeled. Your broker's 1099-B is the source of truth.</p>
+    </main>
+  </div>
+
+  <div class="back" id="back"></div>
+  <aside class="drawer parchment" id="drawer" role="dialog" aria-modal="true" aria-labelledby="d-title" tabindex="-1">
+    <button class="close" type="button" id="close" aria-label="Close">×</button>
+    <div class="label" id="d-label"></div>
+    <h2 id="d-title"></h2>
+    <p class="d-sub muted" id="d-sub"></p>
+    <div id="d-body"></div>
+  </aside>
+
+  <script type="module" src="taxes.js"></script>
+</body>
+</html>

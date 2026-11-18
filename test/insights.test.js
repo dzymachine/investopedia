@@ -98,3 +98,21 @@ test('demo data produces well-formed notes', () => {
     assert.ok(n.details.every((d) => d.length === 2 && typeof d[1] === 'string'));
   }
 });
+
+test('idle cash includes per-account breakdown and margin-active fires when margin is used', () => {
+  const r = base({
+    totals: { value: 20000, cash: 4443, invested: 15557 },
+    accounts: [
+      { institution: 'Charles Schwab', name: 'Individual Brokerage', cash: 4000 },
+      { institution: 'Robinhood', name: 'Individual', cash: 443 },
+    ],
+    margin: { currentBalance: 1500, totalBought: 2400, totalRepaid: 900, totalInterest: 18.42 },
+  });
+  const n = insights(r);
+  const cashNote = n.find((x) => x.id === 'idle-cash');
+  assert.ok(cashNote.body.includes('Charles Schwab'));
+  assert.ok(cashNote.body.includes('Robinhood'));
+  const marginNote = n.find((x) => x.id === 'margin-active');
+  assert.ok(marginNote);
+  assert.ok(marginNote.title.includes('$1,500'));
+});

@@ -35,11 +35,16 @@ const termLabel = (l) => (l.term === 'long' ? 'Long-term' : `Short, long on ${da
 let config = {};
 let data = null;
 let instColor = new Map();
-let holdingsSort = { key: 'value', dir: -1 };
-let lotTerm = 'all';
+let holdingsSort = { key: 'where', dir: 1 };
+let holdingsView = 'account';
 let ledgerRange = '1M';
-let ledgerFilter = 'all';
+let ledgerFilter = 'compare';
+let ledgerScale = 'val';
+let yZoom = 1;
+let yOffset = 0;
+let hiddenLines = new Set();
 let acctIndex = 0;
+let noteOffset = Number(sessionStorage.getItem('noteOffset') || 0);
 
 // --- tooltip -------------------------------------------------------------
 const tip = $('#tip');
@@ -65,9 +70,13 @@ async function api(path, opts = {}) {
 async function load(fresh = false) {
   $('#refresh').disabled = true;
   $('#asof').textContent = 'Loading…';
+  if (fresh === true) {
+    noteOffset += 1;
+    sessionStorage.setItem('noteOffset', String(noteOffset));
+  }
   try {
     data = await api(fresh === true ? '/api/portfolio?fresh=1' : '/api/portfolio');
-    data.items.forEach((it, i) => { if (!instColor.has(it.institution)) instColor.set(it.institution, slot(instColor.size)); });
+    data.items.forEach((it) => { if (!instColor.has(it.institution)) instColor.set(it.institution, slot(instColor.size)); });
     render();
   } catch (err) {
     $('#alerts').replaceChildren(h('div', { class: 'alert' }, err.message));
@@ -180,9 +189,68 @@ function sliceHistory(history, range) {
   return sliced.length ? sliced : history;
 }
 
+function computeYBounds(vals, zoom = 1, allowNegative = false, offset = 0) {
+  const autoMin = Math.min(...vals);
+  const autoMax = Math.max(...vals);
+  const span = autoMax - autoMin;
+  const padV = span > 0 ? span * 0.12 : Math.max(Math.abs(autoMax) * 0.05, allowNegative ? 5 : 100);
+  const baseMin = allowNegative ? autoMin - padV : Math.max(0, autoMin - padV);
+  const baseMax = autoMax + padV;
+  const baseSpan = baseMax - baseMin || 1;
+  if (zoom === 1 && offset === 0) return { minV: baseMin, maxV: baseMax, rangeV: baseSpan };
+
+  const half = (baseSpan / 2) / zoom;
+  const mid = (baseMin + baseMax) / 2 + offset * baseSpan;
+  let minV = mid - half;
+  let maxV = mid + half;
+  if (!allowNegative && minV < 0) {
+    minV = 0;
+    maxV = zoom >= 1 ? 2 * half : Math.max(baseMax, baseSpan / zoom);
+  }
+  return { minV, maxV, rangeV: maxV - minV || 1 };
+}
+
+function clampYOffset() {
+  if (yZoom <= 1) { yOffset = 0; return; }
+  const maxOff = (1 - 1 / yZoom) / 2;
+  yOffset = Math.max(-maxOff, Math.min(maxOff, yOffset));
+}
+
+function bindYPan(hit, svg, ph) {
+  if (yZoom <= 1) return;
+  hit.classList.add('pannable');
+  let dragStartY = null;
+  let startOffset = 0;
+  hit.addEventListener('pointerdown', (e) => {
+    dragStartY = e.clientY;
+    startOffset = yOffset;
+    hit.classList.add('panning');
+    hit.setPointerCapture?.(e.pointerId);
+  });
+  hit.addEventListener('pointermove', (e) => {
+    if (dragStartY == null) return;
+    const rect = svg.getBoundingClientRect();
+    const dy = (e.clientY - dragStartY) / (rect.height || ph || 1);
+    yOffset = startOffset + dy / yZoom;
+    clampYOffset();
+    renderLedger();
+  });
+  const endDrag = () => {
+    if (dragStartY == null) return;
+    dragStartY = null;
+    hit.classList.remove('panning');
+  };
+  hit.addEventListener('pointerup', endDrag);
+  hit.addEventListener('pointercancel', endDrag);
+}
+
 function populateLedgerFilter() {
   const sel = $('#ledger-filter');
-  const groups = [h('option', { value: 'all' }, 'All accounts (Total)')];
+  const groups = [
+    h('option', { value: 'compare' }, 'All accounts (Compare lines)'),
+    h('option', { value: 'compare-stocks' }, 'All stocks (Compare lines)'),
+    h('option', { value: 'all' }, 'All accounts (Total)'),
+  ];
 
   const insts = data?.byInstitution ?? [];
   if (insts.length) {
@@ -212,8 +280,311 @@ function populateLedgerFilter() {
 
   sel.replaceChildren(...groups);
   const has = [...sel.options].some((o) => o.value === ledgerFilter);
-  if (!has) ledgerFilter = 'all';
+  if (!has) ledgerFilter = 'compare';
   sel.value = ledgerFilter;
+}
+
+const lineColor = (idx) => (idx < 8 ? slot(idx) : `hsl(${(idx * 47 + 25) % 360} 58% 60%)`);
+
+function withPlotPts(series) {
+  return series.map((s) => {
+    if (ledgerScale !== 'pct') return { ...s, plotPts: s.pts.map((p) => p.value) };
+    const first = s.pts.find((p) => p.value != null && p.value > 0)?.value;
+    return {
+      ...s,
+      plotPts: s.pts.map((p) => (p.value != null && first ? ((p.value - first) / first) * 100 : null)),
+    };
+  });
+}
+
+function buildCompareSeries(history, mode) {
+  const series = [];
+  if (mode === 'compare-stocks') {
+    const holds = [...(data?.holdings ?? [])].sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+    holds.forEach((x, idx) => {
+      const k = x.ticker || x.key || x.name;
+      const pts = history.map((s) => ({ date: s.date, value: s.holdings?.[k]?.value ?? null }));
+      if (pts.some((p) => p.value != null)) {
+        const label = x.ticker ?? x.name;
+        series.push({ id: `hold:${k}`, label, color: lineColor(idx), pts });
+      }
+    });
+    return withPlotPts(series);
+  }
+
+  const accts = data?.accounts ?? [];
+  accts.forEach((a, idx) => {
+    const key = `${a.institution}::${a.accountId ?? a.name}`;
+    const label = a.name && a.name !== a.institution ? `${a.institution} · ${a.name}` : a.institution;
+    const pts = history.map((s) => ({ date: s.date, value: s.accounts?.[key]?.value ?? null }));
+    if (pts.some((p) => p.value != null)) {
+      series.push({ id: `acct:${key}`, label, color: lineColor(idx), pts });
+    }
+  });
+  // Also include Bitcoin as its own line if held alongside other crypto or alone
+  const btcHold = (data?.holdings ?? []).find((x) => (x.ticker || '').toUpperCase() === 'BTC');
+  if (btcHold && history.some((s) => s.holdings?.BTC?.value != null)) {
+    const pts = history.map((s) => ({ date: s.date, value: s.holdings?.BTC?.value ?? null }));
+    series.push({ id: 'hold:BTC', label: 'Bitcoin (BTC)', color: lineColor(accts.length), pts });
+  }
+  return withPlotPts(series);
+}
+
+function renderCompareLedger(raw) {
+  const wrap = $('#ledger-chart');
+  const note = $('#ledger-note');
+  const hlEl = $('#ledger-hl');
+  const legEl = $('#ledger-legend');
+
+  const sliced = sliceHistory(raw, ledgerRange);
+  const allSeries = buildCompareSeries(sliced, ledgerFilter);
+  if (!sliced.length || !allSeries.length) {
+    wrap.replaceChildren();
+    hlEl.hidden = true;
+    legEl.hidden = true;
+    note.hidden = false;
+    note.textContent = 'Link an account to start recording your daily ledger.';
+    $('#ledger-val').textContent = '–';
+    $('#ledger-chg').textContent = '';
+    $('#ledger-day').textContent = '';
+    $('#ledger-date').textContent = '';
+    return;
+  }
+
+  const visibleSeries = allSeries.filter((s) => !hiddenLines.has(s.id));
+  const activeSeries = visibleSeries.length ? visibleSeries : allSeries;
+
+  // Build Day High / Day Low slots once so hovering never shifts layout
+  const hasMovers = sliced.length >= 2 && allSeries.filter((s) => s.id !== 'hold:BTC').length >= 2;
+  const makeHlSlot = (tag) => {
+    const sw = h('span', { class: 'swatch' });
+    const nm = h('strong', { class: 'hl-name' }, '–');
+    const st = h('span', { class: 'hl-stat' }, '–');
+    const el = h('span', { class: 'hl-item' }, h('span', { class: 'label' }, tag), sw, nm, st);
+    return { el, sw, nm, st };
+  };
+  const hiSlot = makeHlSlot('Day high');
+  const loSlot = makeHlSlot('Day low');
+  hlEl.hidden = !hasMovers;
+  if (hasMovers) hlEl.replaceChildren(hiSlot.el, loSlot.el);
+
+  // Build legend pills once and update values in-place on hover
+  legEl.hidden = false;
+  const legSlots = allSeries.map((s) => {
+    const off = hiddenLines.has(s.id);
+    const valEl = h('span', { class: 'leg-val' }, '–');
+    const chgEl = h('span', { class: 'leg-chg' }, '–');
+    const btn = h('button', {
+      type: 'button',
+      class: `leg-pill${off ? ' off' : ''}`,
+      'aria-pressed': String(!off),
+      onclick: () => {
+        if (hiddenLines.has(s.id)) hiddenLines.delete(s.id);
+        else if (allSeries.length - hiddenLines.size > 1) hiddenLines.add(s.id);
+        renderLedger();
+      },
+    },
+    h('span', { class: 'swatch', style: { background: s.color } }),
+    h('span', { class: 'leg-name' }, s.label),
+    valEl,
+    chgEl);
+    return { s, btn, valEl, chgEl };
+  });
+  legEl.replaceChildren(...legSlots.map((x) => x.btn));
+
+  const setReadout = (idx) => {
+    const snap = sliced[idx];
+    const firstSnap = sliced[0];
+    const prevSnap = idx > 0 ? sliced[idx - 1] : null;
+    const diff = snap.value - firstSnap.value;
+    const diffPct = firstSnap.value ? diff / firstSnap.value : null;
+    const dayDiff = prevSnap ? snap.value - prevSnap.value : null;
+    const dayPct = prevSnap?.value ? dayDiff / prevSnap.value : null;
+
+    $('#ledger-val').textContent = money(snap.value);
+    const chgEl = $('#ledger-chg');
+    chgEl.className = `ledger-chg ${tone(diff)}`;
+    chgEl.textContent = sliced.length > 1
+      ? `${arrow(diff)}${signed(diff)}${diffPct != null ? ` (${pct(diffPct, true)})` : ''}`
+      : '';
+    $('#ledger-day').textContent = dayDiff != null ? `Day: ${signed(dayDiff)}${dayPct != null ? ` (${pct(dayPct, true)})` : ''}` : '';
+    $('#ledger-date').textContent = date(snap.date);
+
+    if (hasMovers) {
+      const movers = [];
+      for (const s of allSeries) {
+        if (ledgerFilter === 'compare' && s.id === 'hold:BTC') continue;
+        const cur = s.pts[idx]?.value;
+        const prv = idx > 0 ? s.pts[idx - 1]?.value : null;
+        if (cur != null && prv != null && prv > 0) {
+          const d = cur - prv;
+          movers.push({ label: s.label, color: s.color, diff: d, pct: d / prv });
+        }
+      }
+      if (movers.length >= 2) {
+        movers.sort((a, b) => b.pct - a.pct);
+        const hi = movers[0];
+        const lo = movers[movers.length - 1];
+        hiSlot.sw.style.background = hi.color;
+        hiSlot.nm.textContent = hi.label;
+        hiSlot.st.className = `hl-stat ${tone(hi.diff)}`;
+        hiSlot.st.textContent = `${signed(hi.diff)} (${pct(hi.pct, true)})`;
+        loSlot.sw.style.background = lo.color;
+        loSlot.nm.textContent = lo.label;
+        loSlot.st.className = `hl-stat ${tone(lo.diff)}`;
+        loSlot.st.textContent = `${signed(lo.diff)} (${pct(lo.pct, true)})`;
+      } else {
+        hiSlot.sw.style.background = 'transparent';
+        hiSlot.nm.textContent = '–';
+        hiSlot.st.className = 'hl-stat muted';
+        hiSlot.st.textContent = 'Start of range';
+        loSlot.sw.style.background = 'transparent';
+        loSlot.nm.textContent = '–';
+        loSlot.st.className = 'hl-stat muted';
+        loSlot.st.textContent = 'Start of range';
+      }
+    }
+
+    for (const { s, valEl, chgEl: lChg } of legSlots) {
+      const cur = s.pts[idx]?.value;
+      const prv = idx > 0 ? s.pts[idx - 1]?.value : null;
+      const d = cur != null && prv != null ? cur - prv : null;
+      const dp = d != null && prv > 0 ? d / prv : null;
+      valEl.textContent = money(cur);
+      if (d != null) {
+        lChg.className = `leg-chg ${tone(d)}`;
+        lChg.textContent = `${signed(d)} (${pct(dp, true)})`;
+      } else {
+        lChg.className = 'leg-chg muted';
+        lChg.textContent = '–';
+      }
+    }
+  };
+  setReadout(sliced.length - 1);
+
+  note.hidden = sliced.length > 1;
+  if (sliced.length === 1) {
+    note.textContent = "Today's snapshot is recorded. Check back on future days to see your daily trend.";
+  }
+
+  const W = 860, H = 250;
+  const pad = { l: 10, r: 78, t: 18, b: 28 };
+  const pw = W - pad.l - pad.r;
+  const ph = H - pad.t - pad.b;
+
+  const isPct = ledgerScale === 'pct';
+  const vals = activeSeries.flatMap((s) => s.plotPts.filter((v) => v != null));
+  const { minV, rangeV } = computeYBounds(vals, yZoom, isPct, yOffset);
+
+  const xAt = (i) => (sliced.length === 1 ? pad.l + pw / 2 : pad.l + (i / (sliced.length - 1)) * pw);
+  const yAt = (v) => pad.t + (1 - (v - minV) / rangeV) * ph;
+
+  const clipId = 'ledger-clip-cmp';
+  const defs = svgEl('defs', {}, [
+    svgEl('clipPath', { id: clipId }, [
+      svgEl('rect', { x: pad.l - 4, y: pad.t - 4, width: pw + 8, height: ph + 8 }),
+    ]),
+  ]);
+
+  const grid = [];
+  for (let i = 0; i <= 3; i++) {
+    const v = minV + (rangeV * i) / 3;
+    const y = yAt(v);
+    const lbl = isPct ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : usd0.format(v);
+    grid.push(
+      svgEl('line', { x1: pad.l, y1: y, x2: W - pad.r, y2: y, class: 'l-grid' }),
+      svgEl('text', { x: W - pad.r + 8, y: y + 4, class: 'l-ylab' }, [lbl]),
+    );
+  }
+  if (isPct && minV < 0 && minV + rangeV > 0) {
+    grid.push(svgEl('line', { x1: pad.l, y1: yAt(0), x2: W - pad.r, y2: yAt(0), class: 'l-base' }));
+  }
+
+  const tickCount = Math.min(5, sliced.length);
+  const xLabels = [];
+  const shortDate = (s) => new Date(`${s}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const usedIdx = new Set();
+  for (let t = 0; t < tickCount; t++) {
+    const idx = tickCount === 1 ? 0 : Math.round((t / (tickCount - 1)) * (sliced.length - 1));
+    if (usedIdx.has(idx)) continue;
+    usedIdx.add(idx);
+    const anchor = idx === 0 && sliced.length > 1 ? 'start' : idx === sliced.length - 1 && sliced.length > 1 ? 'end' : 'middle';
+    xLabels.push(svgEl('text', { x: xAt(idx), y: H - 6, 'text-anchor': anchor, class: 'l-xlab' }, [shortDate(sliced[idx].date)]));
+  }
+
+  const paths = [];
+  const dots = [];
+  for (const s of activeSeries) {
+    const coords = [];
+    s.plotPts.forEach((v, i) => {
+      if (v != null) coords.push(`${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`);
+    });
+    if (coords.length > 1) {
+      paths.push(svgEl('path', {
+        d: `M ${coords.join(' L ')}`, fill: 'none', stroke: s.color,
+        'stroke-width': '2.25', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      }));
+    }
+    const lastV = s.plotPts[sliced.length - 1];
+    const dot = svgEl('circle', {
+      cx: xAt(sliced.length - 1), cy: lastV != null ? yAt(lastV) : -20,
+      r: 4, fill: s.color, class: 'l-dot', visibility: lastV != null ? 'visible' : 'hidden',
+    });
+    dots.push({ s, dot });
+  }
+
+  const cross = svgEl('line', { x1: 0, y1: pad.t, x2: 0, y2: pad.t + ph, class: 'l-cross', visibility: 'hidden' });
+  const hit = svgEl('rect', { x: pad.l, y: pad.t, width: pw, height: ph, fill: 'transparent', class: 'l-hit' });
+
+  const move = (clientX, svg) => {
+    const rect = svg.getBoundingClientRect();
+    const relX = ((clientX - rect.left) / (rect.width || 1)) * W;
+    const norm = Math.max(0, Math.min(1, (relX - pad.l) / (pw || 1)));
+    const idx = sliced.length === 1 ? 0 : Math.round(norm * (sliced.length - 1));
+    const cx = xAt(idx);
+    cross.setAttribute('x1', cx);
+    cross.setAttribute('x2', cx);
+    cross.setAttribute('visibility', 'visible');
+    for (const { s, dot } of dots) {
+      const v = s.plotPts[idx];
+      if (v != null) {
+        dot.setAttribute('cx', cx);
+        dot.setAttribute('cy', yAt(v));
+        dot.setAttribute('visibility', 'visible');
+      } else {
+        dot.setAttribute('visibility', 'hidden');
+      }
+    }
+    setReadout(idx);
+  };
+  const leave = () => {
+    cross.setAttribute('visibility', 'hidden');
+    const lastIdx = sliced.length - 1;
+    for (const { s, dot } of dots) {
+      const v = s.plotPts[lastIdx];
+      if (v != null) {
+        dot.setAttribute('cx', xAt(lastIdx));
+        dot.setAttribute('cy', yAt(v));
+        dot.setAttribute('visibility', 'visible');
+      } else {
+        dot.setAttribute('visibility', 'hidden');
+      }
+    }
+    setReadout(lastIdx);
+  };
+
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Daily comparison chart' }, [
+    defs,
+    ...grid,
+    ...xLabels,
+    svgEl('g', { 'clip-path': `url(#${clipId})` }, [...paths, ...dots.map((d) => d.dot)]),
+    cross,
+    hit,
+  ]);
+  hit.addEventListener('pointermove', (e) => move(e.clientX, svg));
+  hit.addEventListener('pointerleave', leave);
+  bindYPan(hit, svg, ph);
+  wrap.replaceChildren(svg);
 }
 
 function extractLedgerSeries(history, filter) {
@@ -235,7 +606,16 @@ function extractLedgerSeries(history, filter) {
 
 function renderLedger() {
   populateLedgerFilter();
+  const isCompare = ledgerFilter === 'compare' || ledgerFilter === 'compare-stocks';
+  $('#ledger-scale').hidden = !isCompare;
+  $('#y-zoom-reset').setAttribute('aria-pressed', String(yZoom === 1 && yOffset === 0));
+  $('#y-zoom-reset').textContent = yZoom === 1 ? 'Auto' : `${yZoom.toFixed(1)}×`;
+  $('#y-pan-up').disabled = yZoom <= 1;
+  $('#y-pan-down').disabled = yZoom <= 1;
   const raw = data?.history ?? [];
+  if (isCompare) return renderCompareLedger(raw);
+  $('#ledger-hl').hidden = true;
+  $('#ledger-legend').hidden = true;
   const all = extractLedgerSeries(raw, ledgerFilter);
   const wrap = $('#ledger-chart');
   const note = $('#ledger-note');
@@ -291,19 +671,17 @@ function renderLedger() {
   const ph = H - pad.t - pad.b;
 
   const vals = pts.map((p) => p.value);
-  let minV = Math.min(...vals);
-  let maxV = Math.max(...vals);
-  const span = maxV - minV;
-  const padV = span > 0 ? span * 0.14 : Math.max(Math.abs(maxV) * 0.02, 100);
-  minV = Math.max(0, minV - padV);
-  maxV = maxV + padV;
-  const rangeV = maxV - minV || 1;
+  const { minV, rangeV } = computeYBounds(vals, yZoom, false, yOffset);
 
   const xAt = (i) => (pts.length === 1 ? pad.l + pw / 2 : pad.l + (i / (pts.length - 1)) * pw);
   const yAt = (v) => pad.t + (1 - (v - minV) / rangeV) * ph;
 
   const gradId = 'ledger-grad';
+  const clipId = 'ledger-clip-single';
   const defs = svgEl('defs', {}, [
+    svgEl('clipPath', { id: clipId }, [
+      svgEl('rect', { x: pad.l - 4, y: pad.t - 4, width: pw + 8, height: ph + 8 }),
+    ]),
     svgEl('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '0', y2: '1' }, [
       svgEl('stop', { offset: '0%', 'stop-color': stroke, 'stop-opacity': '0.28' }),
       svgEl('stop', { offset: '100%', 'stop-color': stroke, 'stop-opacity': '0' }),
@@ -372,20 +750,23 @@ function renderLedger() {
     defs,
     ...grid,
     ...xLabels,
-    areaD ? svgEl('path', { d: areaD, fill: `url(#${gradId})` }) : null,
-    lineD ? svgEl('path', { d: lineD, fill: 'none', stroke, 'stroke-width': '2.25', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }) : null,
+    svgEl('g', { 'clip-path': `url(#${clipId})` }, [
+      areaD ? svgEl('path', { d: areaD, fill: `url(#${gradId})` }) : null,
+      lineD ? svgEl('path', { d: lineD, fill: 'none', stroke, 'stroke-width': '2.25', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }) : null,
+      dot,
+    ]),
     cross,
-    dot,
     hit,
   ]);
   hit.addEventListener('pointermove', (e) => move(e.clientX, svg));
   hit.addEventListener('pointerleave', leave);
+  bindYPan(hit, svg, ph);
   wrap.replaceChildren(svg);
 }
 
 // --- render ---------------------------------------------------------------
 function render() {
-  const { totals, tax, items } = data;
+  const { totals, items, margin } = data;
   $('#asof').textContent = `As of ${date(data.asOf)}`;
 
   const alerts = [
@@ -405,16 +786,24 @@ function render() {
   $('#k-gain').className = `fig tnum ${tone(totals.unrealized)}`;
   $('#k-gain').replaceChildren(...figNodes(totals.unrealized, signed0(totals.unrealized)));
   $('#k-gain-sub').textContent = `${pct(totals.unrealizedPct, true)} on ${usd0.format(totals.costBasis)} cost basis`;
-  const realized = tax.realizedYtd.short + tax.realizedYtd.long;
-  $('#k-realized').className = `fig tnum ${tone(realized)}`;
-  $('#k-realized').replaceChildren(...figNodes(realized, signed0(realized)));
-  $('#k-realized-sub').textContent = `${signed0(tax.realizedYtd.short)} short-term · ${signed0(tax.realizedYtd.long)} long-term`;
-  $('#k-tax').textContent = usd0.format(tax.estimatedOnRealizedYtd.total);
-  $('#k-tax-sub').textContent = `Due with your ${tax.taxYear} return, ${date(tax.filingDeadline)}`;
+
+  const cashAccts = (data.accounts ?? []).filter((a) => Math.abs(a.cash ?? 0) > 0.01).sort((a, b) => b.cash - a.cash);
+  $('#k-cash').textContent = usd0.format(totals.cash);
+  $('#k-cash-sub').textContent = cashAccts.length
+    ? cashAccts.slice(0, 2).map((a) => `${a.institution} ${usd0.format(a.cash)}`).join(' · ')
+    : 'No cash held';
+
+  const mBal = margin?.currentBalance ?? 0;
+  $('#k-margin').className = `fig tnum ${mBal > 0 ? 'down' : ''}`;
+  $('#k-margin').textContent = usd0.format(mBal);
+  $('#k-margin-sub').textContent = margin
+    ? `Bought ${usd0.format(margin.totalBought)} · Paid ${usd0.format(margin.totalRepaid)}`
+    : 'No margin tracked';
+
   $('#k-side').replaceChildren(...[
-    ['Short-term gains', signed0(tax.unrealized.short), tone(tax.unrealized.short)],
-    ['Long-term gains', signed0(tax.unrealized.long), tone(tax.unrealized.long)],
-    ['Tax if sold today', usd0.format(tax.estimatedIfSoldToday.total), ''],
+    ['Invested', usd0.format(totals.invested), ''],
+    ['Cash', usd0.format(totals.cash), ''],
+    ['Margin owed', usd0.format(mBal), mBal > 0 ? 'down' : ''],
   ].map(([k, v, c]) => h('div', {}, h('dt', { class: 'label' }, k), h('dd', { class: `tnum ${c}` }, v))));
   renderNotes();
 
@@ -424,8 +813,7 @@ function render() {
     .map((t) => ({ label: TYPE_LABEL[t.type] ?? t.type, value: t.value, weight: t.weight, color: slot(Math.max(0, TYPE_ORDER.indexOf(t.type))) })));
 
   renderHoldings();
-  renderTax();
-  renderLots();
+  renderMargin();
 }
 
 function renderAccounts() {
@@ -482,7 +870,106 @@ function table(el, columns, rows, { sort, onSort, empty, onRow } = {}) {
 
 const gainCell = (n, p) => h('span', { class: tone(n) }, signed(n), p !== undefined ? h('span', { class: 'muted' }, ` (${pct(p, true)})`) : null);
 
+function buildAccountHoldingRows() {
+  const totalVal = data?.totals?.value || 0;
+  const rows = [];
+  for (const a of data?.accounts ?? []) {
+    const acctLabel = a.name && a.name !== a.institution ? `${a.institution} · ${a.name}` : a.institution;
+    const where = `${a.institution} · ${a.name ?? ''}${a.mask ? ` ••${a.mask}` : ''}`;
+    for (const p of a.positions ?? []) {
+      rows.push({
+        key: p.ticker ?? p.name,
+        ticker: p.ticker,
+        name: p.name,
+        type: p.type,
+        institution: a.institution,
+        accountName: a.name ?? a.institution,
+        where: acctLabel,
+        whereFull: where,
+        isCash: false,
+        quantity: p.quantity,
+        price: p.price,
+        value: p.value,
+        costBasis: p.costBasis,
+        gain: p.gain,
+        gainPct: p.gainPct,
+        weight: totalVal ? p.value / totalVal : 0,
+      });
+    }
+    if (Math.abs(a.cash ?? 0) > 0.01) {
+      rows.push({
+        key: 'Cash',
+        ticker: 'Cash',
+        name: a.cash < 0 ? 'Margin debit / cash' : 'Cash balance',
+        type: 'cash',
+        institution: a.institution,
+        accountName: a.name ?? a.institution,
+        where: acctLabel,
+        whereFull: where,
+        isCash: true,
+        quantity: a.cash,
+        price: 1,
+        value: a.cash,
+        costBasis: a.cash,
+        gain: 0,
+        gainPct: 0,
+        weight: totalVal ? a.cash / totalVal : 0,
+      });
+    }
+  }
+  return rows;
+}
+
 function renderHoldings() {
+  const sub = $('#holdings-sub');
+  if (holdingsView === 'account') {
+    sub.textContent = 'Sorted by app and account, including cash. Click a column to sort, a row for detail.';
+    const rawRows = buildAccountHoldingRows();
+    const maxW = Math.max(...rawRows.map((x) => Math.abs(x.weight)), 0.0001);
+    const rows = [...rawRows].sort((a, b) => {
+      if (holdingsSort.key === 'where') {
+        const cmp = a.where.localeCompare(b.where) * holdingsSort.dir;
+        return cmp !== 0 ? cmp : b.value - a.value;
+      }
+      const av = a[holdingsSort.key] ?? -Infinity;
+      const bv = b[holdingsSort.key] ?? -Infinity;
+      return (typeof av === 'string' ? av.localeCompare(bv) : av - bv) * holdingsSort.dir;
+    });
+    table('#holdings', [
+      {
+        key: 'where', label: 'Where', left: true, sortable: true,
+        cell: (r) => h('div', { class: 'where-cell' },
+          h('span', { class: 'swatch', style: { background: instColor.get(r.institution) } }),
+          h('div', {}, h('div', { class: 'sym' }, r.institution), h('div', { class: 'nm' }, r.accountName))),
+      },
+      { key: 'key', label: 'Holding', left: true, sortable: true, cell: (r) => h('div', {}, h('div', { class: 'sym' }, r.ticker ?? r.name), h('div', { class: 'nm', title: r.name }, r.name)) },
+      { key: 'quantity', label: 'Quantity', sortable: true, cell: (r) => (r.isCash ? '–' : qty(r.quantity)) },
+      { key: 'price', label: 'Price', sortable: true, cell: (r) => (r.isCash ? '–' : money(r.price)) },
+      { key: 'value', label: 'Value', sortable: true, cell: (r) => h('span', { class: r.value < 0 ? 'down' : '' }, money(r.value)) },
+      { key: 'costBasis', label: 'Cost basis', sortable: true, cell: (r) => (r.isCash ? '–' : money(r.costBasis)) },
+      { key: 'gain', label: 'Gain / loss', sortable: true, cell: (r) => (r.isCash ? '–' : gainCell(r.gain)) },
+      { key: 'gainPct', label: 'Return', sortable: true, cell: (r) => (r.isCash ? '–' : h('span', { class: tone(r.gainPct) }, `${arrow(r.gainPct)}${pct(r.gainPct, true)}`)) },
+      { key: 'weight', label: 'Weight', sortable: true, cell: (r) => h('span', { class: 'weight' }, h('i', { style: { width: `${(Math.max(0, r.weight) / maxW) * 48}px` } }), pct(r.weight)) },
+    ], rows, {
+      sort: holdingsSort,
+      onRow: {
+        label: (r) => `${r.where} ${r.ticker ?? r.name}`,
+        open: (r, el) => {
+          if (r.isCash) return showDrawer(cashDrawer(), el);
+          const match = data.holdings.find((x) => (x.ticker || x.key || x.name) === (r.ticker || r.name));
+          if (match) showDrawer(holdingDrawer(match), el);
+        },
+      },
+      empty: 'No holdings. Link an account to see your positions.',
+      onSort: (key) => {
+        holdingsSort = { key, dir: holdingsSort.key === key ? -holdingsSort.dir : key === 'where' || key === 'key' ? 1 : -1 };
+        renderHoldings();
+      },
+    });
+    return;
+  }
+
+  sub.textContent = 'Combined across accounts. Click a column to sort, a row for detail.';
   const maxW = Math.max(...data.holdings.map((x) => x.weight), 0.0001);
   const rows = [...data.holdings].sort((a, b) => {
     const av = a[holdingsSort.key] ?? -Infinity;
@@ -510,63 +997,68 @@ function renderHoldings() {
   });
 }
 
-function taxCard(title, rows, total, drawer) {
-  return h('button', { class: 'tax-card', type: 'button', onclick: (e) => showDrawer(drawer, e.currentTarget) },
-    h('span', { class: 'glow' }), h('span', { class: 'open' }, 'Open ›'),
-    h('h4', {}, title),
-    h('dl', {}, rows.map(([k, v, cls]) => [h('dt', {}, k), h('dd', { class: cls }, v)]),
-      total ? [h('dt', { class: 'total' }, total[0]), h('dd', { class: 'total' }, total[1])] : null));
+function cashDrawer() {
+  const cashAccts = (data.accounts ?? [])
+    .filter((a) => Math.abs(a.cash ?? 0) > 0.01)
+    .sort((a, b) => b.cash - a.cash);
+  return {
+    label: 'Cash across accounts',
+    title: money(data.totals.cash),
+    sub: `${pct(data.totals.value ? data.totals.cash / data.totals.value : 0)} of your total portfolio.`,
+    body: [
+      sec('Where your cash lives', dtable([
+        ['App', (a) => a.institution, true],
+        ['Account', (a) => a.name + (a.mask ? ` ••${a.mask}` : ''), true],
+        ['Cash', (a) => h('span', { class: a.cash < 0 ? 'down' : '' }, money(a.cash))],
+      ], cashAccts, 'No cash balances found.')),
+    ],
+  };
 }
 
-function renderTax() {
-  const { tax, rates } = data;
-  $('#t-deadline').textContent = date(tax.filingDeadline);
-  const r = tax.realizedYtd;
-  const p = tax.priorYear;
-  const u = tax.unrealized;
-  const rateNote = `${pct(rates.shortTerm)} short · ${pct(rates.longTerm)} long`;
-  $('#tax-grid').replaceChildren(
-    taxCard(`Sold in ${tax.taxYear}`, [
-      ['Short-term gains', signed(r.short), tone(r.short)],
-      ['Long-term gains', signed(r.long), tone(r.long)],
-      r.unknownBasisProceeds ? ['Sales with unknown cost', money(r.unknownBasisProceeds)] : null,
-    ].filter(Boolean), ['Est. tax', money(tax.estimatedOnRealizedYtd.total)], realizedDrawer()),
-    taxCard('If you sold everything today', [
-      ['Short-term gains', signed(u.short), tone(u.short)],
-      ['Long-term gains', signed(u.long), tone(u.long)],
-      ['Rates', rateNote],
-    ], ['Est. tax', money(tax.estimatedIfSoldToday.total)], soldTodayDrawer()),
-    taxCard(`Sold in ${p.year}`, [
-      ['Short-term gains', signed(p.short), tone(p.short)],
-      ['Long-term gains', signed(p.long), tone(p.long)],
-      p.unknownBasisProceeds ? ['Sales with unknown cost', money(p.unknownBasisProceeds)] : null,
-      ['Return due', date(p.filingDeadline)],
-    ].filter(Boolean), null, priorDrawer()),
+const MARGIN_KIND = { buy: 'Bought on margin', repay: 'Paid back', interest: 'Interest paid' };
+
+function renderMargin() {
+  const m = data?.margin;
+  if (!m) return;
+  $('#margin-stats').replaceChildren(...[
+    ['Current margin owed', money(m.currentBalance), m.currentBalance > 0 ? 'down' : ''],
+    ['Bought on margin', money(m.totalBought), ''],
+    ['Paid back so far', money(m.totalRepaid), m.totalRepaid > 0 ? 'up' : ''],
+    ['Interest paid', money(m.totalInterest), m.totalInterest > 0 ? 'down' : ''],
+  ].map(([k, v, cls]) => h('div', {}, h('dt', { class: 'label' }, k), h('dd', { class: cls }, v))));
+
+  const sel = $('#margin-acct');
+  const accts = data?.accounts ?? [];
+  sel.replaceChildren(
+    ...accts.map((a) => {
+      const label = a.name && a.name !== a.institution ? `${a.institution} · ${a.name}` : a.institution;
+      return h('option', { value: `${a.institution}::${a.name ?? ''}` }, label);
+    }),
+    h('option', { value: 'Other::Margin' }, 'Other'),
   );
+  if (!$('#margin-date').value) $('#margin-date').value = data.asOf;
 
-  table('#upcoming', [
-    { label: 'Holding', left: true, cell: (l) => h('span', { class: 'sym' }, l.ticker) },
-    { label: 'Account', left: true, cell: (l) => l.institution },
-    { label: 'Bought', cell: (l) => date(l.acquired) },
-    { label: 'Long-term on', cell: (l) => h('strong', {}, date(l.longTermOn)) },
-    { label: 'Days left', cell: (l) => String(l.daysUntilLongTerm) },
-    { label: 'Gain', cell: (l) => gainCell(l.gain) },
-    { label: 'Tax saved by waiting', cell: (l) => h('strong', { class: 'up' }, money(l.taxSavedByWaiting)) },
-  ], tax.upcoming, { empty: 'No gains turn long-term in the next 120 days.' });
-}
-
-function renderLots() {
-  const rows = data.lots.filter((l) => lotTerm === 'all' || l.term === lotTerm);
-  table('#lots', [
-    { label: 'Holding', left: true, cell: (l) => h('span', { class: 'sym' }, l.ticker) },
-    { label: 'Account', left: true, cell: (l) => l.institution },
-    { label: 'Bought', cell: (l) => (l.acquired ? date(l.acquired) : h('span', { class: 'muted', title: 'Before your available transaction history' }, `before ${date(l.acquiredBefore)}`)) },
-    { label: 'Quantity', cell: (l) => qty(l.quantity) },
-    { label: 'Cost', cell: (l) => money(l.costBasis) },
-    { label: 'Value', cell: (l) => money(l.value) },
-    { label: 'Gain / loss', cell: (l) => gainCell(l.gain) },
-    { label: 'Term', cell: (l) => h('span', { class: 'pill' }, termLabel(l)) },
-  ], rows, { empty: 'No lots match.' });
+  table('#margin-table', [
+    { label: 'Date', left: true, cell: (e) => date(e.date) },
+    { label: 'Type', left: true, cell: (e) => h('span', { class: `pill${e.kind === 'repay' ? ' shelter' : ''}` }, MARGIN_KIND[e.kind] ?? e.kind) },
+    { label: 'Where', left: true, cell: (e) => (e.account ? `${e.institution} · ${e.account}` : e.institution) },
+    { label: 'Ticker', left: true, cell: (e) => (e.ticker ? h('span', { class: 'sym' }, e.ticker) : '–') },
+    { label: 'Amount', cell: (e) => h('span', { class: e.kind === 'repay' ? 'up' : e.kind === 'buy' ? 'down' : '' }, money(e.amount)) },
+    { label: 'Note', left: true, cell: (e) => h('span', { class: 'muted' }, e.note ?? '–') },
+    {
+      label: '',
+      cell: (e) => (config.demo ? null : h('button', {
+        class: 'link',
+        type: 'button',
+        onclick: async () => {
+          try {
+            await api(`/api/margin/${encodeURIComponent(e.id)}`, { method: 'DELETE' });
+            load();
+          } catch (err) { alert(err.message); }
+        },
+      }, 'Remove')),
+    },
+  ], m.entries ?? [], { empty: 'No margin activity logged yet. Click "+ Log margin" to track margin buys, repayments, or interest.' });
 }
 
 // --- drawer ---------------------------------------------------------------
@@ -826,20 +1318,49 @@ function upcomingDrawer(ticker) {
 
 // --- You should know this -------------------------------------------------
 const URG = { urgent: 'Needs attention', useful: 'Worth acting on', fyi: 'Good to know' };
-const ACTION = { upcoming: 'See the lots', holding: 'See the holding', institution: 'See the account', lots: 'See your lots', reauth: 'Reconnect', totals: 'See the breakdown', tax: 'See the tax detail' };
+const ACTION = {
+  upcoming: 'See the lots', holding: 'See the holding', institution: 'See the account',
+  lots: 'See your lots', reauth: 'Reconnect', totals: 'See the breakdown',
+  tax: 'See taxes', holdings: 'See holdings', margin: 'See margin', ledger: 'See daily ledger',
+};
 function runTarget(t, el) {
-  const scroll = (sel) => document.querySelector(sel).scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  const scroll = (sel) => document.querySelector(sel)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
   if (t.kind === 'upcoming') showDrawer(upcomingDrawer(t.ticker), el);
   else if (t.kind === 'holding') { const x = data.holdings.find((k) => k.key === t.key); if (x) showDrawer(holdingDrawer(x), el); }
   else if (t.kind === 'institution') { const it = data.items.find((i) => i.institution === t.name); if (it) showDrawer(institutionDrawer(it), el); }
   else if (t.kind === 'reauth') openLink(t.itemId);
   else if (t.kind === 'totals') showDrawer(totalDrawer(), el);
-  else if (t.kind === 'tax') scroll('#taxes');
-  else if (t.kind === 'lots') scroll('#lots-sec');
+  else if (t.kind === 'holdings') scroll('#holdings-sec');
+  else if (t.kind === 'margin') scroll('#margin-sec');
+  else if (t.kind === 'ledger') scroll('#ledger-sec');
+  else if (t.kind === 'tax' || t.kind === 'lots') location.href = '/taxes.html';
 }
+const noteSig = (n) => `${n.id}|${n.title}`;
+const getDismissed = () => {
+  try { return new Set(JSON.parse(localStorage.getItem('dismissedNotes') || '[]')); }
+  catch { return new Set(); }
+};
+const saveDismissed = (set) => localStorage.setItem('dismissedNotes', JSON.stringify([...set]));
+
 function renderNotes() {
-  const list = data.insights ?? [];
-  $('#notes-sec').hidden = !list.length;
+  const rawAll = data.insights ?? [];
+  const dismissed = getDismissed();
+  const all = rawAll.filter((n) => n.urgency === 'urgent' || !dismissed.has(noteSig(n)));
+  $('#notes-sec').hidden = !all.length;
+  const maxShow = 4;
+  const urgent = all.filter((n) => n.urgency === 'urgent');
+  const rest = all.filter((n) => n.urgency !== 'urgent');
+  const slots = Math.max(0, maxShow - urgent.length);
+  const rotated = [];
+  if (rest.length && slots > 0) {
+    const start = (noteOffset * Math.max(1, Math.min(slots, rest.length))) % rest.length;
+    for (let i = 0; i < Math.min(slots, rest.length); i++) {
+      rotated.push(rest[(start + i) % rest.length]);
+    }
+  }
+  const list = [...urgent, ...rotated].slice(0, Math.max(maxShow, urgent.length));
+  $('#notes-next').hidden = rest.length <= slots;
+
   $('#notes').replaceChildren(...list.map((n, i) => {
     const id = `note-${i}`;
     const root = h('article', { class: 'note parchment rise', style: { '--i': String(i) } });
@@ -847,7 +1368,17 @@ function renderNotes() {
       onclick: () => { const o = root.classList.toggle('open'); head.setAttribute('aria-expanded', String(o)); } },
       h('span', { class: 'seal', 'aria-hidden': 'true' }, '✶'),
       h('span', { class: 'label' }, URG[n.urgency]), h('h3', {}, n.title), h('p', {}, n.body));
-    root.append(head, h('div', { class: 'more', id },
+    const dismissBtn = n.urgency === 'urgent' ? null : h('button', {
+      class: 'note-dismiss', type: 'button', title: 'Dismiss this note', 'aria-label': `Dismiss ${n.title}`,
+      onclick: (e) => {
+        e.stopPropagation();
+        const d = getDismissed();
+        d.add(noteSig(n));
+        saveDismissed(d);
+        renderNotes();
+      },
+    }, '✕');
+    root.append(head, dismissBtn, h('div', { class: 'more', id },
       h('div', {}, dl(n.details), n.target ? h('button', { class: 'link act', type: 'button', onclick: (e) => runTarget(n.target, e.currentTarget) }, ACTION[n.target.kind] ?? 'Open') : null)));
     return root;
   }));
@@ -857,9 +1388,11 @@ function renderNotes() {
 const bindPanel = (id, build) => $(id).addEventListener('click', (e) => { if (data) showDrawer(build(), e.currentTarget); });
 bindPanel('#p-total', totalDrawer);
 bindPanel('#p-gain', gainDrawer);
-bindPanel('#p-realized', realizedDrawer);
-bindPanel('#p-tax', taxDrawer);
+bindPanel('#p-cash', cashDrawer);
 bindPanel('#p-overall', overallDrawer);
+$('#p-margin').addEventListener('click', () => {
+  $('#margin-sec').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+});
 
 // --- settings: running costs ----------------------------------------------
 const RATE_FIELDS = [
@@ -914,11 +1447,50 @@ $('#settings').addEventListener('click', async (e) => {
 });
 
 // --- wiring ---------------------------------------------------------------
-document.querySelectorAll('#lots-sec .seg button').forEach((b) => b.addEventListener('click', () => {
-  lotTerm = b.dataset.term;
-  document.querySelectorAll('#lots-sec .seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-  renderLots();
+$('#notes-next').addEventListener('click', () => {
+  noteOffset += 1;
+  sessionStorage.setItem('noteOffset', String(noteOffset));
+  renderNotes();
+});
+document.querySelectorAll('#holdings-view button').forEach((b) => b.addEventListener('click', () => {
+  holdingsView = b.dataset.hview;
+  holdingsSort = holdingsView === 'account' ? { key: 'where', dir: 1 } : { key: 'value', dir: -1 };
+  document.querySelectorAll('#holdings-view button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  renderHoldings();
 }));
+$('#margin-toggle').addEventListener('click', () => {
+  const form = $('#margin-form');
+  form.hidden = !form.hidden;
+  $('#margin-toggle').textContent = form.hidden ? '+ Log margin' : 'Cancel';
+});
+$('#margin-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.currentTarget;
+  const msg = $('#margin-msg');
+  if (config.demo) { msg.textContent = 'Disabled in demo mode.'; return; }
+  const [institution, account] = (f.elements.accountKey.value || 'Brokerage::').split('::');
+  try {
+    await api('/api/margin', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: f.elements.kind.value,
+        institution,
+        account,
+        date: f.elements.date.value,
+        amount: Number(f.elements.amount.value),
+        ticker: f.elements.ticker.value,
+        note: f.elements.note.value,
+      }),
+    });
+    f.elements.amount.value = '';
+    f.elements.ticker.value = '';
+    f.elements.note.value = '';
+    f.hidden = true;
+    $('#margin-toggle').textContent = '+ Log margin';
+    msg.textContent = '';
+    load();
+  } catch (err) { msg.textContent = err.message; }
+});
 document.querySelectorAll('.ledger-range button').forEach((b) => b.addEventListener('click', () => {
   ledgerRange = b.dataset.range;
   document.querySelectorAll('.ledger-range button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
@@ -926,8 +1498,23 @@ document.querySelectorAll('.ledger-range button').forEach((b) => b.addEventListe
 }));
 $('#ledger-filter').addEventListener('change', (e) => {
   ledgerFilter = e.target.value;
+  hiddenLines.clear();
+  yZoom = 1;
+  yOffset = 0;
   renderLedger();
 });
+document.querySelectorAll('#ledger-scale button').forEach((b) => b.addEventListener('click', () => {
+  ledgerScale = b.dataset.scale;
+  yZoom = 1;
+  yOffset = 0;
+  document.querySelectorAll('#ledger-scale button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  renderLedger();
+}));
+$('#y-pan-up').addEventListener('click', () => { yOffset += 0.25 / yZoom; clampYOffset(); renderLedger(); });
+$('#y-pan-down').addEventListener('click', () => { yOffset -= 0.25 / yZoom; clampYOffset(); renderLedger(); });
+$('#y-zoom-in').addEventListener('click', () => { yZoom = Math.min(16, yZoom * 1.4); clampYOffset(); renderLedger(); });
+$('#y-zoom-out').addEventListener('click', () => { yZoom = Math.max(0.25, yZoom / 1.4); clampYOffset(); renderLedger(); });
+$('#y-zoom-reset').addEventListener('click', () => { yZoom = 1; yOffset = 0; renderLedger(); });
 $('#acct-prev').addEventListener('click', () => { acctIndex -= 1; renderAccountExplorer(); });
 $('#acct-next').addEventListener('click', () => { acctIndex += 1; renderAccountExplorer(); });
 const blurBtn = $('#blur');

@@ -20,6 +20,10 @@
       <div class="brand">
         <h1>Portfolio</h1>
         <span id="env" class="badge"></span>
+        <nav class="top-nav" aria-label="Pages">
+          <a href="/" class="nav-link" aria-current="page">Dashboard</a>
+          <a href="/taxes.html" class="nav-link">Taxes</a>
+        </nav>
       </div>
       <div class="actions">
         <span id="asof" class="muted"></span>
@@ -34,7 +38,10 @@
       <div id="alerts"></div>
 
       <section id="notes-sec" class="notes-sec" aria-labelledby="notes-h" hidden>
-        <h2 id="notes-h" class="sec-title">You should know this</h2>
+        <div class="card-head">
+          <h2 id="notes-h" class="sec-title">You should know this</h2>
+          <button id="notes-next" class="btn ghost btn-sm" type="button" hidden>More notes ›</button>
+        </div>
         <div id="notes" class="notes"></div>
       </section>
 
@@ -67,15 +74,15 @@
           <span class="open">Open ›</span>
           <span class="label">Unrealized gain or loss</span><span id="k-gain" class="fig tnum">–</span><span id="k-gain-sub" class="sub tnum"></span>
         </button>
-        <button class="panel card rise" type="button" id="p-realized" style="--i:3">
+        <button class="panel card rise" type="button" id="p-cash" style="--i:3">
           <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span><span class="glow"></span>
           <span class="open">Open ›</span>
-          <span class="label">Realized this year</span><span id="k-realized" class="fig tnum">–</span><span id="k-realized-sub" class="sub tnum"></span>
+          <span class="label">Cash across accounts</span><span id="k-cash" class="fig tnum">–</span><span id="k-cash-sub" class="sub tnum"></span>
         </button>
-        <button class="panel card rise" type="button" id="p-tax" style="--i:4">
+        <button class="panel card rise" type="button" id="p-margin" style="--i:4">
           <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span><span class="glow"></span>
           <span class="open">Open ›</span>
-          <span class="label">Est. tax on this year's sales</span><span id="k-tax" class="fig tnum">–</span><span id="k-tax-sub" class="sub tnum"></span>
+          <span class="label">Margin balance</span><span id="k-margin" class="fig tnum">–</span><span id="k-margin-sub" class="sub tnum"></span>
         </button>
       </section>
 
@@ -105,9 +112,22 @@
               <button type="button" data-range="1Y" aria-pressed="false">1Y</button>
               <button type="button" data-range="ALL" aria-pressed="false">ALL</button>
             </div>
+            <div class="seg ledger-scale" id="ledger-scale" role="group" aria-label="Chart scale">
+              <button type="button" data-scale="val" aria-pressed="true" title="Dollar value">$</button>
+              <button type="button" data-scale="pct" aria-pressed="false" title="Percent change over range">%</button>
+            </div>
+            <div class="seg ledger-zoom" role="group" aria-label="Y-axis zoom and pan">
+              <button type="button" id="y-pan-up" title="Pan Y-axis up" aria-label="Pan Y-axis up">↑</button>
+              <button type="button" id="y-pan-down" title="Pan Y-axis down" aria-label="Pan Y-axis down">↓</button>
+              <button type="button" id="y-zoom-out" title="Zoom out Y-axis" aria-label="Zoom out Y-axis">−</button>
+              <button type="button" id="y-zoom-reset" title="Reset Y-axis zoom" aria-pressed="true">Auto</button>
+              <button type="button" id="y-zoom-in" title="Zoom in Y-axis" aria-label="Zoom in Y-axis">+</button>
+            </div>
           </div>
         </div>
+        <div id="ledger-hl" class="ledger-hl tnum" hidden></div>
         <div id="ledger-chart" class="ledger-chart"></div>
+        <div id="ledger-legend" class="ledger-legend tnum" hidden></div>
         <p id="ledger-note" class="muted ledger-note" hidden></p>
       </section>
 
@@ -138,38 +158,61 @@
         </div>
       </section>
 
-      <section class="panel rise" style="--i:5">
+      <section class="panel rise" style="--i:5" id="holdings-sec">
         <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
-        <div class="card-head"><h2>Holdings</h2><span class="muted">Combined across accounts. Click a column to sort, a row for detail.</span></div>
+        <div class="card-head">
+          <div>
+            <h2>Holdings</h2>
+            <span id="holdings-sub" class="muted">Grouped by app and account, including cash.</span>
+          </div>
+          <div class="seg" id="holdings-view" role="group" aria-label="Holdings view">
+            <button type="button" data-hview="account" aria-pressed="true">By account</button>
+            <button type="button" data-hview="combined" aria-pressed="false">Combined</button>
+          </div>
+        </div>
         <div class="table-wrap"><table id="holdings"></table></div>
       </section>
 
-      <section class="panel rise" style="--i:6" id="taxes">
-        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
-        <h2>Taxes</h2>
-        <p class="muted lede">You're only taxed when you sell. Gains on shares held more than a year are long-term and taxed at a lower rate.
-          Sales this year are reported on the return due <strong id="t-deadline"></strong>.</p>
-        <div class="tax-grid" id="tax-grid"></div>
-        <h3 class="label sub-h">Turning long-term soon</h3>
-        <p class="muted">These lots have a gain. Waiting until the date shown before selling moves them to the lower long-term rate.</p>
-        <div class="table-wrap"><table id="upcoming"></table></div>
-      </section>
-
-      <section class="panel rise" style="--i:7" id="lots-sec">
+      <section class="panel rise" style="--i:6" id="margin-sec" aria-labelledby="margin-h">
         <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
         <div class="card-head">
-          <h2>Tax lots</h2>
-          <div class="seg" role="group" aria-label="Filter lots">
-            <button type="button" data-term="all" aria-pressed="true">All</button>
-            <button type="button" data-term="short" aria-pressed="false">Short-term</button>
-            <button type="button" data-term="long" aria-pressed="false">Long-term</button>
+          <div>
+            <h2 id="margin-h">Margin</h2>
+            <span class="muted">Track margin spending, repayments, and interest paid so far.</span>
           </div>
+          <button id="margin-toggle" class="btn ghost btn-sm" type="button">+ Log margin</button>
         </div>
-        <div class="table-wrap"><table id="lots"></table></div>
+        <dl id="margin-stats" class="acct-stats tnum"></dl>
+        <form id="margin-form" class="margin-form" hidden>
+          <label><span>Type</span>
+            <select name="kind" required>
+              <option value="buy">Bought on margin</option>
+              <option value="repay">Paid back margin</option>
+              <option value="interest">Margin interest paid</option>
+            </select>
+          </label>
+          <label><span>Account</span>
+            <select name="accountKey" id="margin-acct"></select>
+          </label>
+          <label><span>Date</span>
+            <input type="date" name="date" id="margin-date" required>
+          </label>
+          <label><span>Amount ($)</span>
+            <input type="number" name="amount" step="0.01" min="0.01" placeholder="500.00" required>
+          </label>
+          <label><span>Ticker (optional)</span>
+            <input type="text" name="ticker" maxlength="20" placeholder="NVDA">
+          </label>
+          <label><span>Note (optional)</span>
+            <input type="text" name="note" maxlength="200" placeholder="Bought 10 shares">
+          </label>
+          <div class="margin-form-act">
+            <button class="btn btn-sm" type="submit">Save entry</button>
+            <span id="margin-msg" class="muted" role="status"></span>
+          </div>
+        </form>
+        <div class="table-wrap"><table id="margin-table"></table></div>
       </section>
-
-      <p class="disclaimer muted">Estimates only, not tax advice. Uses your rates from <code>.env</code> and first-in, first-out matching.
-        Wash sales, stock splits, transfers between brokers, and the $3,000 loss deduction aren't modeled. Your broker's 1099-B is the source of truth.</p>
     </main>
   </div>
 
